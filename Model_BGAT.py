@@ -6,7 +6,7 @@ import torch.nn.functional as F
 CLAMP_MIN = -200.0
 CLAMP_MAX =  200.0
 ########################################
-# 1) BGATAttention: The GAT Layer Component
+# 1) BGATAttention: The GAT Layer 
 ########################################
 class BGATAttention(nn.Module):
     def __init__(self, user_dim, ant_dim, edge_dim, hidden_dim, num_heads):
@@ -119,7 +119,7 @@ class BGATAttention(nn.Module):
         return user_out, ant_out
 
 ########################################
-# 2) BGATBlock: GAT, MLP, and Readout (for both δ and power)
+# 2) BGATBlock: GAT, MLP, and Readout
 ########################################
 class BGATBlock(nn.Module):
     def __init__(self, user_dim, ant_dim, edge_dim, hidden_dim, num_heads,
