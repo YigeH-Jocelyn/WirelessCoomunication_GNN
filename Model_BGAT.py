@@ -197,11 +197,11 @@ class BGATBlock(nn.Module):
         self.M = M
 
     def forward(self, user_feats_init, ant_feats, edge_feats):
-        # 1) Apply GAT with **initial user features**
+        # 1) Apply GAT
         u_attn, a_attn = self.attention(user_feats_init, ant_feats, edge_feats)
         a_attn = self.layer_norm_ant(a_attn)
 
-        # 2) Process via MLPs
+        # 2) MLPs
         ant_out_2d = self.dropout(self.mlp_ant(a_attn))
         ant_out_2d = torch.clamp(ant_out_2d, CLAMP_MIN, CLAMP_MAX)
 

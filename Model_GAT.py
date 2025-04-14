@@ -98,14 +98,14 @@ class GATLayer(nn.Module):
 ##############################################################################
 class GATModel(nn.Module):
     def __init__(self,
-                 in_dim,  # e.g., 2 or 3 (e.g., user location)
-                 hidden_dim,  # hidden dimension per head (each head outputs a vector of dimension out_dim)
-                 num_layers,  # number of GAT layers (e.g., 4)
+                 in_dim,  # user location
+                 hidden_dim,  # hidden dimension per head
+                 num_layers,  # number of GAT layers
                  num_heads,  # number of attention heads
                  N,  # N: number of antennas
                  waveguide_bound,  # D: half-range for antenna deployment
-                 delta_min,  # Δ: minimum (guard) distance
-                 Pmax,  # Total power budget (linear scale)
+                 delta_min,  # Δ: minimum distance
+                 Pmax,  # Total power budget
                  H  # Antenna height
                  ):
         super().__init__()
