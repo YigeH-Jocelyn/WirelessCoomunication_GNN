@@ -102,7 +102,7 @@ class GATModel(nn.Module):
                  hidden_dim,  # hidden dimension per head
                  num_layers,  # number of GAT layers
                  num_heads,  # number of attention heads
-                 N,  # N: number of antennas
+                 N,  # Number of antennas
                  waveguide_bound,  # D: half-range for antenna deployment
                  delta_min,  # Δ: minimum distance
                  Pmax,  # Total power budget
