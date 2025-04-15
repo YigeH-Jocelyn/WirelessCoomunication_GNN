@@ -94,7 +94,7 @@ class GATLayer(nn.Module):
 
 
 ##############################################################################
-# 2) Independent GAT Baseline Model (replicating Appendix B of the paper)
+# 2) GAT Baseline Model
 ##############################################################################
 class GATModel(nn.Module):
     def __init__(self,
@@ -102,9 +102,9 @@ class GATModel(nn.Module):
                  hidden_dim,  # hidden dimension per head
                  num_layers,  # number of GAT layers
                  num_heads,  # number of attention heads
-                 N,  # N: number of antennas
-                 waveguide_bound,  # D: half-range for antenna deployment
-                 delta_min,  # Δ: minimum distance
+                 N,  # Number of antennas
+                 waveguide_bound,  # half-range for antenna deployment
+                 delta_min,  # minimum distance
                  Pmax,  # Total power budget
                  H  # Antenna height
                  ):
