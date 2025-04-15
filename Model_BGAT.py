@@ -197,6 +197,9 @@ class BGATBlock(nn.Module):
         self.M = M
 
     def forward(self, user_feats_init, ant_feats, edge_feats):
+        B, M, _ = user_feats_init.shape  # number of users
+        B, N, _ = ant_feats.shape  # number of antennas
+
         # 1) Apply GAT
         u_attn, a_attn = self.attention(user_feats_init, ant_feats, edge_feats)
         a_attn = self.layer_norm_ant(a_attn)
@@ -291,10 +294,12 @@ class BGATModel(nn.Module):
     def forward(self, user_feats, delta_init, power_init):
         user_feats_init = user_feats[..., :2]
         ant_feats = torch.stack([delta_init, power_init], dim=-1)
+        B, M, _ = user_feats_init.shape  # number of users
+        B, N, _ = ant_feats.shape  # number of antennas
 
         x0 = torch.zeros_like(delta_init)
         x0[:, 0] = delta_init[:, 0] - self.waveguide_bound
-        for n in range(1, self.N):
+        for n in range(1, N):
             x0[:, n] = x0[:, n - 1] + delta_init[:, n] + self.delta_min - self.waveguide_bound
 
         init_positions = torch.stack([

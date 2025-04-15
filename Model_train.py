@@ -65,6 +65,7 @@ def train_model(model, train_loader, test_loader, model_type, lr=LR, epochs=EPOC
                 loss = 0.0
                 for i, (p, pos) in enumerate(ants_pred, start=0):
                     weight = (i + 1) / len(ants_pred)
+                    # weight = 1
                     loss += weight * ee_loss(users, pos, p, eta, sigma2)
 
             elif model_type == 'GAT':
@@ -106,6 +107,7 @@ def train_model(model, train_loader, test_loader, model_type, lr=LR, epochs=EPOC
                     loss = 0.0
                     for i, (p, pos) in enumerate(ants_pred):
                         weight = (i + 1) / len(ants_pred)
+                        # weight = 1
                         loss += weight * ee_loss(users, pos, p, eta, sigma2)
                 elif model_type == 'GAT':
                     p_pred, d_pred = model(users)
