@@ -274,13 +274,65 @@ class BGATBlock(nn.Module):
 ########################################
 # 3) BGATModel: Stacking Multiple Blocks
 ########################################
+# class BGATModel(nn.Module):
+#     def __init__(self, D_blocks, user_dim, ant_dim, hidden_dim, num_heads,
+#                  waveguide_bound, delta_min, H, Pmax, N, M, L):
+#         super().__init__()
+#         self.blocks = nn.ModuleList([
+#             BGATBlock(user_dim, ant_dim, edge_dim=1, hidden_dim=hidden_dim, num_heads=num_heads,
+#                       waveguide_bound=waveguide_bound, delta_min=delta_min, H=H, Pmax=Pmax,N=N, M=M)
+#             for _ in range(D_blocks)
+#         ])
+#         self.waveguide_bound = waveguide_bound
+#         self.delta_min = delta_min
+#         self.H = H
+#         self.Pmax = Pmax
+#         self.N = N
+#         self.M = M
+#         self.L = L
+#
+#     def forward(self, user_feats, delta_init, power_init):
+#         user_feats_init = user_feats[..., :2]
+#         ant_feats = torch.stack([delta_init, power_init], dim=-1)
+#         B, M, _ = user_feats_init.shape  # number of users
+#         B, N, _ = ant_feats.shape  # number of antennas
+#
+#         x0 = torch.zeros_like(delta_init)
+#         x0[:, 0] = delta_init[:, 0] - self.waveguide_bound
+#         for n in range(1, N):
+#             x0[:, n] = x0[:, n - 1] + delta_init[:, n] + self.delta_min - self.waveguide_bound
+#
+#         init_positions = torch.stack([
+#             x0, torch.zeros_like(x0), torch.full_like(x0, self.H)
+#         ], dim=-1)
+#
+#         user_xy = user_feats_init[..., :2]
+#         edge_feats = torch.norm(
+#             user_xy.unsqueeze(2) - init_positions[..., :2].unsqueeze(1),
+#             dim=-1, keepdim=True
+#         )
+#         intermediate_outputs = []
+#         final_positions = init_positions
+#         for block in self.blocks:
+#             ant_feats, edge_feats, final_positions = block(user_feats_init, ant_feats, edge_feats)
+#             curr_power = ant_feats[..., 1]
+#             intermediate_outputs.append((curr_power, final_positions))
+#
+#         # scaled_power = ant_feats[..., 1]
+#         # scaled_delta = ant_feats[..., 0]
+#
+#         final_power, final_positions = intermediate_outputs[-1]
+#
+#         # return scaled_power, scaled_delta, final_positions
+#         return final_power, final_positions, intermediate_outputs
+
 class BGATModel(nn.Module):
     def __init__(self, D_blocks, user_dim, ant_dim, hidden_dim, num_heads,
                  waveguide_bound, delta_min, H, Pmax, N, M, L):
         super().__init__()
         self.blocks = nn.ModuleList([
             BGATBlock(user_dim, ant_dim, edge_dim=1, hidden_dim=hidden_dim, num_heads=num_heads,
-                      waveguide_bound=waveguide_bound, delta_min=delta_min, H=H, Pmax=Pmax,N=N, M=M)
+                      waveguide_bound=waveguide_bound, delta_min=delta_min, H=H, Pmax=Pmax, N=N, M=M)
             for _ in range(D_blocks)
         ])
         self.waveguide_bound = waveguide_bound
@@ -291,12 +343,18 @@ class BGATModel(nn.Module):
         self.M = M
         self.L = L
 
-    def forward(self, user_feats, delta_init, power_init):
-        user_feats_init = user_feats[..., :2]
-        ant_feats = torch.stack([delta_init, power_init], dim=-1)
-        B, M, _ = user_feats_init.shape  # number of users
-        B, N, _ = ant_feats.shape  # number of antennas
+        # Learnable scalar split factor δ in logit space
+        self.logit_delta = nn.Parameter(torch.tensor(0.0))  # sigmoid(logit) in (0,1)
 
+    def forward(self, user_feats, delta_init):
+        user_feats_init = user_feats[..., :2]
+
+        # only delta used; remove power
+        ant_feats = torch.stack([delta_init, torch.zeros_like(delta_init)], dim=-1)  # dummy 2nd dim
+        B, M, _ = user_feats_init.shape
+        B, N, _ = ant_feats.shape
+
+        # Initial antenna positions
         x0 = torch.zeros_like(delta_init)
         x0[:, 0] = delta_init[:, 0] - self.waveguide_bound
         for n in range(1, N):
@@ -311,17 +369,11 @@ class BGATModel(nn.Module):
             user_xy.unsqueeze(2) - init_positions[..., :2].unsqueeze(1),
             dim=-1, keepdim=True
         )
-        intermediate_outputs = []
+
         final_positions = init_positions
         for block in self.blocks:
             ant_feats, edge_feats, final_positions = block(user_feats_init, ant_feats, edge_feats)
-            curr_power = ant_feats[..., 1]
-            intermediate_outputs.append((curr_power, final_positions))
 
-        # scaled_power = ant_feats[..., 1]
-        # scaled_delta = ant_feats[..., 0]
+        # Predict positions only
+        return torch.sigmoid(self.logit_delta), final_positions  # return δ ∈ (0,1), positions
 
-        final_power, final_positions = intermediate_outputs[-1]
-
-        # return scaled_power, scaled_delta, final_positions
-        return final_power, final_positions, intermediate_outputs
