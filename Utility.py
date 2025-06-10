@@ -129,26 +129,45 @@ def data_rate(users, antennas, power, feed_point, eta, sigma2):
     return rates
 
 
-def ee_loss(users, antennas, power, eta, sigma2):
-    feed_point = torch.tensor([[-D, 0, H]], dtype=torch.float32, device=antennas.device)
-    feed_point = feed_point.expand(antennas.size(0), 1, 3)
-    rate = data_rate(users, antennas, power, feed_point, eta, sigma2).sum(dim=1)
-    # loss = -torch.mean(rate)
-    # loss = torch.nan_to_num(loss, nan=1.0, posinf=1.0, neginf=-1.0)
+# def ee_loss(users, antennas, power, eta, sigma2):
+#     feed_point = torch.tensor([[-D, 0, H]], dtype=torch.float32, device=antennas.device)
+#     feed_point = feed_point.expand(antennas.size(0), 1, 3)
+#     rate = data_rate(users, antennas, power, feed_point, eta, sigma2).sum(dim=1)
+#     # loss = -torch.mean(rate)
+#     # loss = torch.nan_to_num(loss, nan=1.0, posinf=1.0, neginf=-1.0)
+#
+#     power_total = power.sum(dim=1) + Pc
+#     # print(torch.mean(power_total))
+#     power_total = torch.clamp(power_total, min=1e-6)
+#
+#     ee_value = rate / power_total
+#     ee_value = torch.nan_to_num(ee_value, nan=0.0, posinf=1e6, neginf=-1e6)
+#
+#     loss = -torch.mean(ee_value)
+#     # loss = -torch.mean(rate)
+#
+#     return loss
+#     # return -torch.mean(rate / power_total)
+#     # return -torch.mean((rate / (power_total + 1e-8) + 1e-8))
 
-    power_total = power.sum(dim=1) + Pc
-    # print(torch.mean(power_total))
-    power_total = torch.clamp(power_total, min=1e-6)
+def dynamic_ee_loss(users, positions, delta, Pin=1.0, eta=..., sigma2=...):
+    B, M, _ = users.shape
+    B, N, _ = positions.shape
+    delta = delta.clamp(0.0, 1.0)
+    beta = 2 * np.pi * n_neff / lambda_fs
+    alpha = 2 * np.pi / lambda_fs
+    Dn = torch.norm(users.unsqueeze(2) - positions.unsqueeze(1), dim=-1).clamp(min=1e-3)
 
-    ee_value = rate / power_total
-    ee_value = torch.nan_to_num(ee_value, nan=0.0, posinf=1e6, neginf=-1e6)
+    phase_term = -1j * (beta * positions[:, :, 0].unsqueeze(1) + alpha * Dn)
+    amplitude = (delta ** torch.arange(N).float().to(users.device)).unsqueeze(0).unsqueeze(1) / Dn
+    weighted = amplitude * torch.exp(phase_term)
 
-    loss = -torch.mean(ee_value)
-    # loss = -torch.mean(rate)
+    channel_sum = weighted.sum(dim=2)
+    snr = (eta ** 2) * (1 - delta ** 2) * Pin * torch.abs(channel_sum) ** 2 / sigma2
+    rate = torch.log1p(snr)
+    power_total = Pin + Pc
+    return -torch.mean(rate / power_total)
 
-    return loss
-    # return -torch.mean(rate / power_total)
-    # return -torch.mean((rate / (power_total + 1e-8) + 1e-8))
 
 def average_power(power):
     # Compute total power per sample (sum over antennas plus constant power Pc).
