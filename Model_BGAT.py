@@ -126,161 +126,81 @@ class BGATBlock(nn.Module):
                  waveguide_bound, delta_min, H, Pmax, N, M):
         super().__init__()
         self.attention = BGATAttention(user_dim, ant_dim, edge_dim, hidden_dim, num_heads)
-        self.layer_norm_user = nn.LayerNorm(hidden_dim)
-        self.layer_norm_ant = nn.LayerNorm(hidden_dim)
-        self.layer_norm_delta = nn.LayerNorm(N)
-        self.layer_norm_power = nn.LayerNorm(N)
+
+        self.mlp_user = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 2, 2),
+            nn.ReLU()
+        )
 
         self.mlp_ant = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2, bias=True),
+            nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
-            nn.Linear(hidden_dim // 2, 2, bias=True),
-            nn.ReLU(),
-            # nn.LeakyReLU(negative_slope=0.1)
+            nn.Linear(hidden_dim // 2, 1),  # Only 1D output for delta
+            nn.ReLU()
         )
+
         self.raw_readout_delta = nn.Sequential(
             nn.Linear(N, 2 * N),
             nn.ReLU(),
             nn.Linear(2 * N, N)
         )
-        self.raw_readout_power = nn.Sequential(
-            nn.Linear(N, 2 * N),
-            nn.ReLU(),
-            nn.Linear(2 * N, N)
-        )
-
-        for module in self.mlp_ant:
-            if isinstance(module, nn.Linear):
-                nn.init.kaiming_normal_(module.weight, mode='fan_in', nonlinearity='relu')
-                # module.weight.data.mul_(0.5)
-                nn.init.constant_(module.bias, 0.1)
-
-        for module in self.raw_readout_delta:
-            if isinstance(module, nn.Linear):
-                nn.init.kaiming_normal_(module.weight, mode='fan_in', nonlinearity='relu')
-                # module.weight.data.mul_(0.5)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-        for module in self.raw_readout_power:
-            if isinstance(module, nn.Linear):
-                nn.init.kaiming_normal_(module.weight, mode='fan_in', nonlinearity='relu')
-                # module.weight.data.mul_(0.5)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-
-        # for module in self.mlp_user:
-        #     if isinstance(module, nn.Linear):
-        #         nn.init.xavier_uniform_(module.weight)
-        #         nn.init.zeros_(module.bias)
-        # for module in self.mlp_ant:
-        #     if isinstance(module, nn.Linear):
-        #         nn.init.xavier_uniform_(module.weight)
-        #         nn.init.zeros_(module.bias)
-        #
-        # for module in self.raw_readout_delta:
-        #     if isinstance(module, nn.Linear):
-        #         nn.init.xavier_uniform_(module.weight)
-        #         if module.bias is not None:
-        #             nn.init.zeros_(module.bias)
-        # for module in self.raw_readout_power:
-        #     if isinstance(module, nn.Linear):
-        #         nn.init.xavier_uniform_(module.weight)
-        #         if module.bias is not None:
-        #             nn.init.zeros_(module.bias)
 
         self.dropout = nn.Dropout(0.1)
+
         self.waveguide_bound = waveguide_bound
         self.delta_min = delta_min
         self.H = H
-        self.Pmax = Pmax
         self.N = N
-        self.M = M
 
     def forward(self, user_feats_init, ant_feats, edge_feats):
-        B, M, _ = user_feats_init.shape  # number of users
-        B, N, _ = ant_feats.shape  # number of antennas
-
-        # 1) Apply GAT
+        # GAT attention
         u_attn, a_attn = self.attention(user_feats_init, ant_feats, edge_feats)
-        a_attn = self.layer_norm_ant(a_attn)
 
-        # 2) MLPs
-        ant_out_2d = self.dropout(self.mlp_ant(a_attn))
-        ant_out_2d = torch.clamp(ant_out_2d, CLAMP_MIN, CLAMP_MAX)
+        user_out = self.dropout(self.mlp_user(u_attn))
+        ant_out = self.dropout(self.mlp_ant(a_attn)).squeeze(-1)  # shape: (B, N)
 
-        raw_delta = self.raw_readout_delta(ant_out_2d[..., 0])
-        raw_power = self.raw_readout_power(ant_out_2d[..., 1])
-        raw_delta = torch.clamp(raw_delta, min=0.0, max=1e2)
-        raw_power = torch.nan_to_num(raw_power, nan=0.0, posinf=1, neginf=0)
-
-        # 3) First Readout NN (Delta)
-        Bmax_val = 2 * self.waveguide_bound - (self.N - 1) * self.delta_min
+        raw_delta = self.raw_readout_delta(ant_out)  # (B, N)
         delta_aux = F.relu(raw_delta)
-        sum_delta = delta_aux.sum(dim=1, keepdim=True)
-        scale_factor_delta = Bmax_val / torch.maximum(
-            torch.tensor(Bmax_val, device=sum_delta.device),
-            sum_delta
-        )
-        scaled_delta = scale_factor_delta * delta_aux
-        scaled_delta = torch.clamp(scaled_delta, 0.0, 1e2)
 
-        # 4) Compute New Positions
+        Bmax_val = 2 * self.waveguide_bound - (self.N - 1) * self.delta_min
+        sum_delta = torch.clamp(delta_aux.sum(dim=1, keepdim=True), 1e-6, 1e6)
+        scale_factor = Bmax_val / torch.maximum(torch.tensor(Bmax_val, device=delta_aux.device), sum_delta)
+        scaled_delta = torch.clamp(scale_factor * delta_aux, 0.0, 1000)
+
+        # Compute positions
         x = torch.zeros_like(scaled_delta)
         x[:, 0] = scaled_delta[:, 0] - self.waveguide_bound
         for n in range(1, self.N):
             x[:, n] = x[:, n - 1] + scaled_delta[:, n] + self.delta_min - self.waveguide_bound
-        positions = torch.stack([x, torch.zeros_like(x), torch.full_like(x, self.H)], dim=-1)
 
-        # 5) Second Readout NN (Power)
-        eps = 1e-3
-        power_aux = F.relu(raw_power)
-        power_aux = torch.nan_to_num(power_aux, nan=0.0, posinf=1, neginf=0)
-        power_aux = torch.clamp(power_aux, 0.0, 1)
+        positions = torch.stack([
+            x, torch.zeros_like(x), torch.full_like(x, self.H)
+        ], dim=-1)
 
-        sum_power = power_aux.sum(dim=1, keepdim=True)
-        sum_power = torch.nan_to_num(sum_power, nan=eps, posinf=eps, neginf=-eps)
-        denom = torch.clamp(sum_power, min=eps)
-
-        pmax_tensor = torch.tensor(self.Pmax, device=sum_power.device, dtype=power_aux.dtype).detach()
-        pmax_tensor = torch.nan_to_num(pmax_tensor, nan=1.0, posinf=1, neginf=0.0)
-
-        scale_factor_power = pmax_tensor / denom
-        scale_factor_power = torch.nan_to_num(scale_factor_power, nan=1.0, posinf=1.0, neginf=0)
-        scale_factor_power = scale_factor_power.detach()
-
-        scaled_power = scale_factor_power * power_aux
-        scaled_power = torch.nan_to_num(scaled_power, nan=0.0, posinf=1, neginf=0)
-        scaled_power = torch.clamp(scaled_power, 0.0, 1)
-
-        # scale_factor_power = self.Pmax / torch.maximum(
-        #     torch.tensor(self.Pmax, device=sum_power.device),
-        #     sum_power
-        # )
-        # scaled_power = scale_factor_power * power_aux
-        # scaled_power = torch.clamp(scaled_power, 0.0, 1e3)
-        # scaled_power = torch.nan_to_num(scaled_power, nan=0.0, posinf=1e3, neginf=-1e3)
-
-        ant_feats_out = torch.stack([scaled_delta, scaled_power], dim=-1)
-
+        # Update edge features
         user_xy = user_feats_init[..., :2]
         edge_feats_new = torch.norm(
             user_xy.unsqueeze(2) - positions[..., :2].unsqueeze(1),
             dim=-1, keepdim=True
         )
 
-        return ant_feats_out, edge_feats_new, positions
+        # Only return delta and updated positions
+        return scaled_delta.unsqueeze(-1), edge_feats_new, positions
 
 
 ########################################
 # 3) BGATModel: Stacking Multiple Blocks
 ########################################
+
 class BGATModel(nn.Module):
     def __init__(self, D_blocks, user_dim, ant_dim, hidden_dim, num_heads,
                  waveguide_bound, delta_min, H, Pmax, N, M, L):
         super().__init__()
         self.blocks = nn.ModuleList([
             BGATBlock(user_dim, ant_dim, edge_dim=1, hidden_dim=hidden_dim, num_heads=num_heads,
-                      waveguide_bound=waveguide_bound, delta_min=delta_min, H=H, Pmax=Pmax,N=N, M=M)
+                      waveguide_bound=waveguide_bound, delta_min=delta_min, H=H, Pmax=Pmax, N=N, M=M)
             for _ in range(D_blocks)
         ])
         self.waveguide_bound = waveguide_bound
@@ -291,12 +211,18 @@ class BGATModel(nn.Module):
         self.M = M
         self.L = L
 
-    def forward(self, user_feats, delta_init, power_init):
-        user_feats_init = user_feats[..., :2]
-        ant_feats = torch.stack([delta_init, power_init], dim=-1)
-        B, M, _ = user_feats_init.shape  # number of users
-        B, N, _ = ant_feats.shape  # number of antennas
+        # Learnable scalar split factor δ in logit space
+        self.logit_delta = nn.Parameter(torch.tensor(0.0))  # sigmoid(logit) in (0,1)
 
+    def forward(self, user_feats, delta_init):
+        user_feats_init = user_feats[..., :2]
+
+        # [B, N, 1]
+        ant_feats = delta_init.unsqueeze(-1)
+        B, M, _ = user_feats_init.shape
+        B, N, _ = ant_feats.shape
+
+        # Compute initial positions
         x0 = torch.zeros_like(delta_init)
         x0[:, 0] = delta_init[:, 0] - self.waveguide_bound
         for n in range(1, N):
@@ -306,22 +232,23 @@ class BGATModel(nn.Module):
             x0, torch.zeros_like(x0), torch.full_like(x0, self.H)
         ], dim=-1)
 
+        # Edge features (user-antenna distances)
         user_xy = user_feats_init[..., :2]
         edge_feats = torch.norm(
             user_xy.unsqueeze(2) - init_positions[..., :2].unsqueeze(1),
             dim=-1, keepdim=True
         )
-        intermediate_outputs = []
+
         final_positions = init_positions
+        intermediate_outputs = []  # << add this line
+        delta_scalar = torch.sigmoid(self.logit_delta)
+
         for block in self.blocks:
             ant_feats, edge_feats, final_positions = block(user_feats_init, ant_feats, edge_feats)
-            curr_power = ant_feats[..., 1]
-            intermediate_outputs.append((curr_power, final_positions))
+            # delta_this_block = ant_feats[..., 0]  # shape: [B, N]
+            # intermediate_outputs.append((delta_this_block, final_positions))
+            intermediate_outputs.append((delta_scalar, final_positions))
 
-        # scaled_power = ant_feats[..., 1]
-        # scaled_delta = ant_feats[..., 0]
+        return delta_scalar, final_positions, intermediate_outputs
 
-        final_power, final_positions = intermediate_outputs[-1]
 
-        # return scaled_power, scaled_delta, final_positions
-        return final_power, final_positions, intermediate_outputs
