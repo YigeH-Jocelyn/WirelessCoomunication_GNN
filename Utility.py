@@ -4,7 +4,7 @@ import torch
 from torch.utils.data import Dataset
 
 # --------------------------- Hyperparameters ---------------------------
-M = 2                                       # Number of users
+M = 1                                       # Number of users
 N = 4                                       # Number of antennas
 L = 100.0                                   # User area range
 D = 50.0                                    # Half-range for antenna deployment
@@ -19,7 +19,7 @@ lambda_fs = c / fc                          # Free-space wavelength
 lambda_R = c / (fc * n_neff)                # Waveguide wavelength
 delta_min = lambda_fs / 2                   # Minimum antenna spacing
 eta = (c ** 2) / ((4 * math.pi * fc) ** 2)  # Path loss constant
-d_blocks = 5                                # Number of Blocks
+d_blocks = 2                                # Number of Blocks
 h_dim = 32                                  # Hidden Layers
 o_dim = 2                                   # User dimension
 NUM_SAMPLES_TRAIN = 100000                  # Number of Samples in each Training set
@@ -74,7 +74,7 @@ class PinchingDataset(Dataset):
         )
 
 def data_rate(users, antennas, power, feed_point, eta, sigma2):
-    diff = users.unsqueeze(2) - antennas.unsqueeze(1)  # shape: [batch, M, N, 3]
+    diff = users.unsqueeze(2) - antennas.unsqueeze(1)  # [batch, M, N, 3]
     diff = torch.nan_to_num(diff, nan=0.0, posinf=1e6, neginf=-1e6)
 
     d_ua = torch.norm(diff, dim=-1).clamp_min(0.1)  # avoid division by 0
@@ -128,49 +128,35 @@ def data_rate(users, antennas, power, feed_point, eta, sigma2):
     rates = torch.nan_to_num(rates, nan=0.0, posinf=1e6, neginf=-1e6)
     return rates
 
-
-# def ee_loss(users, antennas, power, eta, sigma2):
-#     feed_point = torch.tensor([[-D, 0, H]], dtype=torch.float32, device=antennas.device)
-#     feed_point = feed_point.expand(antennas.size(0), 1, 3)
-#     rate = data_rate(users, antennas, power, feed_point, eta, sigma2).sum(dim=1)
-#     # loss = -torch.mean(rate)
-#     # loss = torch.nan_to_num(loss, nan=1.0, posinf=1.0, neginf=-1.0)
-#
-#     power_total = power.sum(dim=1) + Pc
-#     # print(torch.mean(power_total))
-#     power_total = torch.clamp(power_total, min=1e-6)
-#
-#     ee_value = rate / power_total
-#     ee_value = torch.nan_to_num(ee_value, nan=0.0, posinf=1e6, neginf=-1e6)
-#
-#     loss = -torch.mean(ee_value)
-#     # loss = -torch.mean(rate)
-#
-#     return loss
-#     # return -torch.mean(rate / power_total)
-#     # return -torch.mean((rate / (power_total + 1e-8) + 1e-8))
-
-def dynamic_ee_loss(users, positions, delta, Pin=1.0, eta=..., sigma2=...):
-    B, M, _ = users.shape
+def dynamic_ee_loss(users, positions, delta_scalar, eta, sigma2, Pin=1.0, Pc=0.5, xi=1.0):
+    # delta_scalar is δ=cos(κℓ)
+    B, _, _ = users.shape  # users shape: (B, 1, 3)
     B, N, _ = positions.shape
-    delta = delta.clamp(0.0, 1.0)
-    beta = 2 * np.pi * n_neff / lambda_fs
-    alpha = 2 * np.pi / lambda_fs
-    Dn = torch.norm(users.unsqueeze(2) - positions.unsqueeze(1), dim=-1).clamp(min=1e-3)
 
-    phase_term = -1j * (beta * positions[:, :, 0].unsqueeze(1) + alpha * Dn)
-    amplitude = (delta ** torch.arange(N).float().to(users.device)).unsqueeze(0).unsqueeze(1) / Dn
-    weighted = amplitude * torch.exp(phase_term)
+    delta = delta_scalar.clamp(0.01, 0.99)
 
-    channel_sum = weighted.sum(dim=2)
-    snr = (eta ** 2) * (1 - delta ** 2) * Pin * torch.abs(channel_sum) ** 2 / sigma2
-    rate = torch.log1p(snr)
-    power_total = Pin + Pc
-    return -torch.mean(rate / power_total)
+    beta = 2 * math.pi * n_neff / lambda_fs # waveguide phase shift
+    alpha = 2 * math.pi / lambda_fs # free-space phase shift
 
+    u = users[:, 0, :]  # (B, 3) extract the single user’s coordinates
+
+    Dn = torch.norm(u.unsqueeze(1) - positions, dim=-1).clamp(min=1e-3)  # (B, N)
+    x_n = positions[:, :, 0]  # (B, N)
+
+    n_indices = torch.arange(N, device=users.device).float().view(1, N)
+    delta_pow = delta.view(-1, 1) ** n_indices  # (B, N)
+
+    phase = -1j * (beta * x_n + alpha * Dn)  # (B, N)
+    h = (delta_pow / Dn) * torch.exp(phase)  # (B, N)
+    h_sum = h.sum(dim=1)  # (B,)
+
+    snr = (xi ** 2) * (1 - delta ** 2) * Pin * torch.abs(h_sum) ** 2 / sigma2  # (B,)
+    rate = torch.log1p(snr.clamp_min(1e-9))  # (B,)
+    ee = rate / (Pin + Pc)  # (B,)
+    return -torch.mean(ee)
 
 def average_power(power):
-    # Compute total power per sample (sum over antennas plus constant power Pc).
+    # Compute total power per sample.
     power_total = power.sum(dim=1) + Pc
     # Average over the batch to get a single scalar.
     return torch.mean(power_total)
